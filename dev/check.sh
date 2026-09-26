@@ -22,6 +22,9 @@ echo "==> smoke test"
 echo "==> updater state-machine test"
 "$PYTHON" dev/smoke_update.py
 
+echo "==> cafe menu feed contract"
+"$PYTHON" dev/smoke_cafe_menu.py
+
 echo "==> shell syntax"
 bash -n tools/flash.sh tools/pi/bootstrap.sh tools/pi/firstrun.sh.tmpl \
   tools/pi/izzy-orders-setup tools/pi/izzy-orders-update dev/smoke_izzy_update.sh

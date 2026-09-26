@@ -6,6 +6,11 @@ in two columns. Each column is sized to its own content, so the short-item colum
 stays narrow and the long-item column ("Cardamom cold foam") gets the width it needs.
 Prefers a crisp bitmap font; falls back to a bundled copy of the menu if the feed is
 unreachable, so the sign is never blank.
+
+The feed is validated before it's used. The kernel's data cache treats any parseable
+JSON as good, so a feed with the wrong *shape* would otherwise be cached and then fail
+inside render() on every frame until the next refresh. Instead a malformed feed is
+rejected and the last good menu keeps showing.
 """
 
 from PIL import Image, ImageDraw
@@ -19,15 +24,52 @@ COLORS = {
     "item": (232, 232, 232),
 }
 
+# Shown only when the sign has had no valid feed since it started (e.g. it booted
+# offline). Keep it in step with the live menu at https://izzybennett.com/izzys-cafe.json:
+# when it drifts, the sign shows customers a plausible menu of things the kitchen can't
+# make. Last synced with the live feed on 2026-09-26.
 FALLBACK_MENU = {
     "title": "Izzy's Cafe",
     "sections": [
         {"heading": "Drinks", "items": ["Coffee", "Matcha"]},
         {"heading": "Milks", "items": ["Whole", "Oat"]},
-        {"heading": "Syrups", "items": ["Cardamom", "Earl Gray"]},
-        {"heading": "Food", "items": ["Cardamom cookie", "Ricotta toast"]},
+        {"heading": "Syrups", "items": ["Apple Cinnamon", "Melon", "Cardamom"]},
+        {"heading": "Food", "items": ["Earl Grey Cake", "Deviled Eggs"]},
     ],
 }
+
+
+def _non_empty_str(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+def menu_problem(menu):
+    """Why `menu` breaks the feed contract, or None if it's valid.
+
+    Mirrors izzybennett.com's `scripts/check-menu-feed.mjs`, which gates the site's
+    deploy on the same shape: an object with a non-empty string `title` and a non-empty
+    `sections` list, each section an object with a non-empty string `heading` and a
+    non-empty `items` list of non-empty strings. Checks shape only, never item text.
+    """
+    if not isinstance(menu, dict):
+        return f"feed is {type(menu).__name__}, not an object"
+    if not _non_empty_str(menu.get("title")):
+        return "title must be a non-empty string"
+    sections = menu.get("sections")
+    if not isinstance(sections, list) or not sections:
+        return "sections must be a non-empty list"
+    for i, section in enumerate(sections):
+        if not isinstance(section, dict):
+            return f"sections[{i}] must be an object"
+        if not _non_empty_str(section.get("heading")):
+            return f"sections[{i}].heading must be a non-empty string"
+        items = section.get("items")
+        if not isinstance(items, list) or not items:
+            return f"sections[{i}].items must be a non-empty list"
+        for j, item in enumerate(items):
+            if not _non_empty_str(item):
+                return f"sections[{i}].items[{j}] must be a non-empty string"
+    return None
 
 
 class CafeMenuApp(App):
@@ -38,9 +80,19 @@ class CafeMenuApp(App):
     def refresh(self):
         url = self.config.get("menu_url")
         ttl = self.refresh_interval or 300
-        if url:
-            self._menu = self.services.data.get_json(url, ttl=ttl, fallback=FALLBACK_MENU)
-        else:
+        if not url:
+            self._menu = FALLBACK_MENU
+            return
+        menu = self.services.data.get_json(url, ttl=ttl, fallback=FALLBACK_MENU)
+        problem = menu_problem(menu)
+        if problem is None:
+            self._menu = menu
+            return
+        # Keep whatever was showing — the last good feed, or the fallback if there
+        # has never been one — rather than adopting a menu render() would choke on.
+        kept = "last good menu" if self._menu is not None else "fallback menu"
+        self.services.log(f"cafe_menu: rejected feed from {url} ({problem}); keeping {kept}")
+        if self._menu is None:
             self._menu = FALLBACK_MENU
 
     # --- layout ------------------------------------------------------------
@@ -56,17 +108,23 @@ class CafeMenuApp(App):
 
     @staticmethod
     def _split_columns(sections):
-        """Split sections across two columns, keeping order and balancing height."""
-        total = sum(1 + len(s.get("items", [])) for s in sections)
-        half = (total + 1) // 2
-        left, right, filled = [], [], 0
-        for section in sections:
-            if filled < half:
-                left.append(section)
-                filled += 1 + len(section.get("items", []))
-            else:
-                right.append(section)
-        return left, right
+        """Split sections across two columns, keeping order and balancing height.
+
+        Tries every break point and keeps the one whose taller column is shortest (ties
+        go to the leftmost). A greedy fill-past-half can't do this: with sections of
+        3, 3, 4 and 3 rows it put 10 rows on the left and 3 on the right, which no font
+        fits on a 64-row canvas, so the bottom of the left column was cut off.
+        """
+        heights = [1 + len(s.get("items", [])) for s in sections]
+        total = sum(heights)
+        best_k, best_tallest, left_rows = 0, total, 0
+        for k in range(len(sections) + 1):
+            tallest = max(left_rows, total - left_rows)
+            if tallest < best_tallest:
+                best_k, best_tallest = k, tallest
+            if k < len(sections):
+                left_rows += heights[k]
+        return list(sections[:best_k]), list(sections[best_k:])
 
     def _choose_font(self, title, left, right, width, height):
         """Pick the largest bundled bitmap font that fits; else auto-size a TTF."""
