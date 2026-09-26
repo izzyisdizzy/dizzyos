@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/izzyisdizzy/dizzyos/compare/v1.2.0...v1.2.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* **apps:** cafe menu rejects malformed feeds + unclips the menu, feedguardmaxxing ([#20](https://github.com/izzyisdizzy/dizzyos/issues/20)) ([48501e9](https://github.com/izzyisdizzy/dizzyos/commit/48501e97a71bb9203644fc83f5ff1a8a0f7f5718))
+
 ## [1.2.0](https://github.com/ibennet/dizzyos/compare/v1.1.0...v1.2.0) (2026-08-09)
 
 
